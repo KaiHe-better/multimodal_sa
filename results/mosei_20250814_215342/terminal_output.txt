@@ -1,0 +1,78 @@
+Terminal output is now being logged to /raid/hpc/hekai/WorkShop/My_project/Multi_SA/0814/results/mosei_20250814_215342/terminal_output.txt
+Experiment hyperparameters:
+  gpu: 6
+  dataset: mosei
+  max_seq_length: 50
+  train_batch_size: 1
+  dev_batch_size: 1
+  test_batch_size: 1
+  n_epochs: 500
+  beta_shift: 1.0
+  dropout_prob: 0.3
+  model: Qwen/Qwen3-4B
+  learning_rate: 5e-06
+  gradient_accumulation_step: 8
+  warmup_proportion: 0.2
+  seed: 24
+  save_results: True
+  output_dir: results
+  save_interval: 5
+  limit_steps_enabled: False
+  limit_steps: 30
+  freeze_plm_epochs: 0
+
+==================================================
+
+Starting experiment with mosei dataset
+Results will be saved to /raid/hpc/hekai/WorkShop/My_project/Multi_SA/0814/results/mosei_20250814_215342
+[INFO] Converted 16265 valid samples from 16265 total samples
+[INFO] Converted 1869 valid samples from 1869 total samples
+[INFO] Converted 4643 valid samples from 4643 total samples
+16265
+total parameter for the model:  4023774046
+执行自定义权重初始化...
+[DEBUG] 开始自定义权重初始化...
+Using learning rate: 5e-06
+[DEBUG] Model output stats - min: 0.045633, max: 0.045633, mean: 0.045633, std: nan
+[DEBUG] Model output stats - min: 0.042098, max: 0.042098, mean: 0.042098, std: nan
+[DEBUG] Model output stats - min: 0.048344, max: 0.048344, mean: 0.048344, std: nan
+[INFO] Epoch 0 completed: 2034 valid steps, avg loss: 0.6217
+epoch:0, train_loss:0.6217, valid_loss:0.1287, test_acc:0.8511
+current mae:0.6185, acc@0:0.8511, acc7:0.5341, f1@0:0.8523, corr:0.7895, cal_thr:-0.15, acc@cal:0.8564, f1@cal:0.8540
+*** New best performance at epoch 0! ***
+best mae:0.6185, acc:0.8511, acc7:0.5341, f1:0.8523, corr:0.7895 (epoch 0)
+[INFO] Current learning rate: 5.00e-06
+[INFO] Epoch 1 completed: 2034 valid steps, avg loss: 0.2883
+epoch:1, train_loss:0.2883, valid_loss:0.1156, test_acc:0.8605
+current mae:0.5710, acc@0:0.8605, acc7:0.5322, f1@0:0.8609, corr:0.8031, cal_thr:-0.10, acc@cal:0.8660, f1@cal:0.8650
+*** New best performance at epoch 1! ***
+best mae:0.5710, acc:0.8605, acc7:0.5322, f1:0.8609, corr:0.8031 (epoch 1)
+[INFO] Epoch 2 completed: 2034 valid steps, avg loss: 0.1298
+epoch:2, train_loss:0.1298, valid_loss:0.1184, test_acc:0.8641
+current mae:0.5802, acc@0:0.8641, acc7:0.5324, f1@0:0.8622, corr:0.7970, cal_thr:0.05, acc@cal:0.8646, f1@cal:0.8638
+best mae:0.5710, acc:0.8605, acc7:0.5322, f1:0.8609, corr:0.8031 (epoch 1)
+[INFO] Epoch 3 completed: 2034 valid steps, avg loss: 0.0887
+epoch:3, train_loss:0.0887, valid_loss:0.1188, test_acc:0.8646
+current mae:0.5851, acc@0:0.8646, acc7:0.5354, f1@0:0.8653, corr:0.8019, cal_thr:-0.05, acc@cal:0.8682, f1@cal:0.8681
+best mae:0.5710, acc:0.8605, acc7:0.5322, f1:0.8609, corr:0.8031 (epoch 1)
+[INFO] Epoch 4 completed: 2034 valid steps, avg loss: 0.0654
+epoch:4, train_loss:0.0654, valid_loss:0.1153, test_acc:0.8685
+current mae:0.5700, acc@0:0.8685, acc7:0.5333, f1@0:0.8682, corr:0.8056, cal_thr:0.00, acc@cal:0.8691, f1@cal:0.8688
+*** New best performance at epoch 4! ***
+best mae:0.5700, acc:0.8685, acc7:0.5333, f1:0.8682, corr:0.8056 (epoch 4)
+[INFO] Training progress plot saved to: /raid/hpc/hekai/WorkShop/My_project/Multi_SA/0814/results/mosei_20250814_215342/training_progress_epoch_5.png
+[INFO] Saved intermediate results and plot at epoch 5
+[INFO] Epoch 5 completed: 2034 valid steps, avg loss: 0.0490
+epoch:5, train_loss:0.0490, valid_loss:0.1129, test_acc:0.8622
+current mae:0.5711, acc@0:0.8622, acc7:0.5363, f1@0:0.8630, corr:0.8086, cal_thr:-0.10, acc@cal:0.8688, f1@cal:0.8681
+*** New best performance at epoch 5! ***
+best mae:0.5711, acc:0.8622, acc7:0.5363, f1:0.8630, corr:0.8086 (epoch 5)
+[INFO] Epoch 6 completed: 2034 valid steps, avg loss: 0.0395
+epoch:6, train_loss:0.0395, valid_loss:0.1132, test_acc:0.8718
+current mae:0.5654, acc@0:0.8718, acc7:0.5415, f1@0:0.8706, corr:0.8056, cal_thr:0.15, acc@cal:0.8602, f1@cal:0.8615
+best mae:0.5711, acc:0.8622, acc7:0.5363, f1:0.8630, corr:0.8086 (epoch 5)
+[INFO] Epoch 7 completed: 2034 valid steps, avg loss: 0.0287
+epoch:7, train_loss:0.0287, valid_loss:0.1173, test_acc:0.8691
+current mae:0.5662, acc@0:0.8691, acc7:0.5369, f1@0:0.8684, corr:0.8081, cal_thr:0.10, acc@cal:0.8597, f1@cal:0.8605
+best mae:0.5711, acc:0.8622, acc7:0.5363, f1:0.8630, corr:0.8086 (epoch 5)
+[INFO] Epoch 8 completed: 2034 valid steps, avg loss: 0.0245
