@@ -1,251 +1,110 @@
-import logging
 import math
-from mimetypes import init
-import os
 import warnings
-from dataclasses import dataclass
 from typing import Optional, Tuple
-from modules.transformer import TransformerEncoder
+
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.nn import L1Loss, MSELoss
+from torch.nn.utils import clip_grad_norm_
+from torch.autograd import Variable
+from torch.nn import Parameter
+from torch.nn.init import xavier_normal_ as _xavier_normal_
+from transformers import AutoModel
 from scipy.spatial.distance import pdist, squareform
 import scipy.sparse.linalg
 
-import torch
-import torch.utils.checkpoint
-from torch import nn
-#from torch.nn import CrossEntropyLoss, MSELoss
-
-from torch.nn import CrossEntropyLoss, L1Loss, MSELoss
-
-# from transformers.modeling_bert import BertPreTrainedModel
-from transformers import AutoModel, AutoConfig
-from transformers.activations import gelu, gelu_new
-from transformers.activations import ACT2FN
-
-from transformers.models.bert.configuration_bert import BertConfig
-
-import torch.optim as optim
-from itertools import chain
-
-from transformers.models.bert.modeling_bert import BertEmbeddings, BertEncoder, BertPooler
-from transformers.modeling_utils import (
-    PreTrainedModel,
-    apply_chunking_to_forward,
-    find_pruneable_heads_and_indices,
-    prune_linear_layer,
-)
+# compatibility alias for legacy code blocks
+def xavier_normal(tensor):
+    _xavier_normal_(tensor)
 
 
-# from global_configs import DEVICE
-logger = logging.getLogger(__name__)
-
-_CONFIG_FOR_DOC = "BertConfig"
-_TOKENIZER_FOR_DOC = "BertTokenizer"
-
-BERT_PRETRAINED_MODEL_ARCHIVE_LIST = [
-    "bert-base-uncased",
-    "bert-large-uncased",
-    "bert-base-cased",
-    "bert-large-cased",
-    "bert-base-multilingual-uncased",
-    "bert-base-multilingual-cased",
-    "bert-base-chinese",
-    "bert-base-german-cased",
-    "bert-large-uncased-whole-word-masking",
-    "bert-large-cased-whole-word-masking",
-    "bert-large-uncased-whole-word-masking-finetuned-squad",
-    "bert-large-cased-whole-word-masking-finetuned-squad",
-    "bert-base-cased-finetuned-mrpc",
-    "bert-base-german-dbmdz-cased",
-    "bert-base-german-dbmdz-uncased",
-    "cl-tohoku/bert-base-japanese",
-    "cl-tohoku/bert-base-japanese-whole-word-masking",
-    "cl-tohoku/bert-base-japanese-char",
-    "cl-tohoku/bert-base-japanese-char-whole-word-masking",
-    "TurkuNLP/bert-base-finnish-cased-v1",
-    "TurkuNLP/bert-base-finnish-uncased-v1",
-    "wietsedv/bert-base-dutch-cased",
-    # See all BERT models at https://huggingface.co/models?filter=bert
-]
-
-
-def mish(x):
-    return x * torch.tanh(nn.functional.softplus(x))
-
-
-ACT2FN = {
-    "gelu": gelu,
-    "relu": torch.nn.functional.relu,
-    "swish": ACT2FN["swish"],
-    "gelu_new": gelu_new,
-    "mish": mish,
-}
-
-
-BertLayerNorm = torch.nn.LayerNorm
+try:
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+except Exception:
+    DEVICE = torch.device("cpu")
 
 
 class MIB_BertModel(nn.Module):
-    def __init__(self, model_name, multimodal_config, d_l, text_dim):
+    """Backbone text encoder wrapper with projection to common dim."""
+    def __init__(self, model_name: str, d_l: int = 50):
         super().__init__()
-        self.d_l = d_l
-        # 默认加载预训练模型（包括 Qwen），不强制覆盖 dtype
         self.model = AutoModel.from_pretrained(model_name, trust_remote_code=True)
-        # 启用梯度检查点以节省激活显存；禁用use_cache避免KV缓存占用
-        if hasattr(self.model, 'gradient_checkpointing_enable'):
-            try:
+        try:
+            if hasattr(self.model, "gradient_checkpointing_enable"):
                 self.model.gradient_checkpointing_enable()
-            except Exception:
-                pass
-        if hasattr(self.model, 'config') and hasattr(self.model.config, 'use_cache'):
-            try:
+            if hasattr(self.model.config, "use_cache"):
                 self.model.config.use_cache = False
-            except Exception:
-                pass
-        # 使用底座模型的隐藏维度作为Conv1d输入通道，避免与固定TEXT_DIM不匹配
-        _hidden = getattr(self.model.config, 'hidden_size', None)
-        if _hidden is None:
-            _hidden = getattr(self.model.config, 'hidden_dim', 768)
-        self.proj_l = nn.Conv1d(_hidden, self.d_l, kernel_size=3, stride=1, padding=1, bias=False)
-        with torch.no_grad():
-            nn.init.xavier_uniform_(self.proj_l.weight, gain=0.1)
+        except Exception:
+            pass
+        hidden = getattr(self.model.config, "hidden_size", 768)
+        # project token hidden to d_l
+        self.proj = nn.Conv1d(in_channels=hidden, out_channels=d_l, kernel_size=1)
 
-    def forward(self, input_ids, attention_mask=None, token_type_ids=None, position_ids=None, inputs_embeds=None, **kwargs):
-        outputs = self.model(
+    def forward(self, input_ids, attention_mask=None, token_type_ids=None, **kwargs):
+        out = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            inputs_embeds=inputs_embeds,
-            **kwargs,
+            output_hidden_states=False,
+            return_dict=True,
         )
-        sequence_output = outputs.last_hidden_state
-        outputs = sequence_output.transpose(1, 2)
-        outputs = self.proj_l(outputs)
-        pooled_output = outputs[:, :, -1]
-        return pooled_output, outputs
+        last_hidden = out.last_hidden_state  # [B, T, H]
+        x = last_hidden.transpose(1, 2)     # [B, H, T]
+        x = self.proj(x)                    # [B, d_l, T]
+        x = x.transpose(1, 2)               # [B, T, d_l]
+        return x  # sequence features in d_l
 
-
-beta   = 1e-3
-from torch.optim import AdamW, Adam
-from torch.nn import Sequential
-from torch.nn import functional as F
-
-from torch.nn.parameter import Parameter
-from torch.nn.init import xavier_normal_
-from torch.nn.init import xavier_normal_ as xavier_normal
-from torch.autograd import Variable
-import numpy as np
 
 class DIB(nn.Module):
-    def __init__(self, model_name, multimodal_config, text_dim, visual_dim, acoustic_dim):
+    """Full model: text backbone + A/V projection + temporal encoders + fusion"""
+    def __init__(self, model_name: str, multimodal_config=None, text_dim=768, visual_dim=35, acoustic_dim=74, num_latents: int = 5, d_l: int = 50, mi_weight: float = 1.0):
         super().__init__()
-        self.d_l = 50
-        self.bert = MIB_BertModel(model_name, multimodal_config, self.d_l, text_dim)
-        # 追踪PLM（自回归/编码器）是否被冻结
-        self._plm_frozen = False
-        # 使用多模态配置控制dropout，避免未定义的config
-        self.dropout = nn.Dropout(getattr(multimodal_config, 'dropout_prob', 0.1))
-        self.attn_dropout = 0.5
-        # 输入模态投影
-        self.proj_a = nn.Conv1d(acoustic_dim, self.d_l, kernel_size=3, stride=1, padding=1, bias=False)
-        self.proj_v = nn.Conv1d(visual_dim, self.d_l, kernel_size=3, stride=1, padding=1, bias=False)
-        # 时序Transformer
-        self.transa = self.get_network(self_type='l', layers=3)
-        self.transv = self.get_network(self_type='l', layers=3)
-        # 学习率与结构参数
-        self.llr = 1e-5
-        self.lr = 2e-5
-        self.num_latents = 4
-        self.mean = nn.AdaptiveAvgPool1d(1)
+        self.config = multimodal_config
+        self.d_l = d_l
+        self.mi_weight = float(mi_weight)
+
+        # text backbone
+        self.bert = MIB_BertModel(model_name, d_l=d_l)
+
+        # project audio/visual to d_l via 1x1 conv on feature dim
+        self.proj_a = nn.Conv1d(in_channels=acoustic_dim, out_channels=d_l, kernel_size=1)
+        self.proj_v = nn.Conv1d(in_channels=visual_dim, out_channels=d_l, kernel_size=1)
+
+        # simple temporal encoders (TransformerEncoder)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_l, nhead=5, batch_first=True)
+        self.transa = nn.TransformerEncoder(encoder_layer, num_layers=1)
+        self.transv = nn.TransformerEncoder(encoder_layer, num_layers=1)
+
+        # fusion
+        self.fusion = My_concatFusion(input_dim=self.d_l, output_dim=1)
+        # self.fusion = My_DIB_Fusion(num_latents=num_latents, d_l=d_l)
+
         self.loss_fct = MSELoss()
 
-        # self.fusion = My_concatFusion(input_dim=self.d_l, output_dim=1)
-        self.fusion = My_DIB_Fusion(self.num_latents, self.d_l)  
-        
-
-    # ============== 冻结/解冻预训练语言模型（Qwen/BERT等） ==============
+    # optional: plm freeze/unfreeze for main.py hooks
     def freeze_plm(self):
-        """Freeze parameters of the loaded pretrained language model only.
-        保持自定义层(投影/transformer/融合)可训练。
-        """
-        try:
-            for p in self.bert.model.parameters():
-                p.requires_grad = False
-            # 冻结时将PLM置为eval以关闭其内部dropout，稳定特征
-            self.bert.model.eval()
-            self._plm_frozen = True
-            print("[INFO] Pretrained LM frozen (no grad, eval mode).")
-        except Exception as e:
-            print(f"[WARNING] Freeze PLM failed: {e}")
+        for p in self.bert.parameters():
+            p.requires_grad = False
+        self.bert.eval()
 
     def unfreeze_plm(self):
-        """Unfreeze parameters of the pretrained language model and enable training."""
-        try:
-            for p in self.bert.model.parameters():
-                p.requires_grad = True
-            # 解冻后让PLM进入train，由外层model.train()控制具体dropout行为
-            self.bert.model.train()
-            self._plm_frozen = False
-            print("[INFO] Pretrained LM unfrozen (trainable).")
-        except Exception as e:
-            print(f"[WARNING] Unfreeze PLM failed: {e}")
-
+        for p in self.bert.parameters():
+            p.requires_grad = True
+        self.bert.train()
 
     def _init_custom_weights(self):
-        """自定义权重初始化 - 使用更保守的初始化"""
-        # 检查是否是meta tensor，如果是则跳过
-        if hasattr(self.proj_a.weight, 'is_meta') and self.proj_a.weight.is_meta:
-            print("[DEBUG] 跳过meta tensor的权重初始化")
-            return
-            
-        print("[DEBUG] 开始自定义权重初始化...")
-        # 初始化投影层 - 使用适中方差，避免信号被过度压缩
-        with torch.no_grad():
-            nn.init.xavier_uniform_(self.proj_a.weight, gain=0.03)
-            nn.init.xavier_uniform_(self.proj_v.weight, gain=0.03)
-            
-            # 确保投影层bias为零
-            if hasattr(self.proj_a, 'bias') and self.proj_a.bias is not None:
-                nn.init.zeros_(self.proj_a.bias)
-            if hasattr(self.proj_v, 'bias') and self.proj_v.bias is not None:
-                nn.init.zeros_(self.proj_v.bias)
-        
-        # 融合层采用其内部的合理初始化（保持默认/xavier），避免过小权重导致输出幅值过小
-                        
-        # 初始化BERT中的proj_l层 - 使用适中增益
-        with torch.no_grad():
-            nn.init.xavier_uniform_(self.bert.proj_l.weight, gain=0.03)
-                        
-        # 初始化transformer层权重
-        self._init_transformer_weights()
+        # lightweight xavier init for new layers
+        for m in self.modules():
+            if isinstance(m, (nn.Linear, nn.Conv1d)):
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            if isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
 
-    def _init_transformer_weights(self):
-        """初始化transformer权重以提高数值稳定性"""
-        with torch.no_grad():
-            for name, param in self.named_parameters():
-                if 'transa' in name or 'transv' in name:
-                    if 'weight' in name and param.dim() > 1:
-                        nn.init.xavier_uniform_(param, gain=0.01)  # 更保守的初始化
-                    elif 'bias' in name:
-                        nn.init.zeros_(param)
-
-
-    def get_network(self, self_type='l', layers=5):
-        if self_type in ['l', 'al', 'vl']:
-            embed_dim, attn_dropout = self.d_l, self.attn_dropout
-
-        else:
-            raise ValueError("Unknown network type")
-
-        return TransformerEncoder(embed_dim=embed_dim,
-                                  num_heads= 5, #self.num_heads,
-                                  layers=layers,#max(self.layers, layers),
-                                  attn_dropout=attn_dropout,
-                                  relu_dropout=0.3,#self.relu_dropout,
-                                  res_dropout= 0.3,#self.res_dropout,
-                                  embed_dropout=0.2,#self.embed_dropout,
-                                  attn_mask= False)#self.attn_mask)
-    
     def forward(
         self,
         input_ids,
@@ -254,806 +113,284 @@ class DIB(nn.Module):
         label_ids,
         attention_mask=None,
         token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
         labels=None,
-        output_attentions=None,
-        output_hidden_states=None
     ):
-        
-        outputs, output_l_alld = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-        )
+        # Text sequence features in d_l
+        output_l = self.bert(input_ids=input_ids, attention_mask=attention_mask, token_type_ids=token_type_ids)  # [B,T,d_l]
 
-        # 修复：使用正确的BERT输出
-        # outputs是pooled_output [batch, d_l]，output_l_alld是sequence_output [batch, d_l, seq_len]
-        output_ll = output_l_alld  # 使用sequence_output而不是pooled_output 
+        # A/V: input comes [B,T,D], conv1d expects [B,D,T]
+        acoustic_t = acoustic.transpose(1, 2)               # [B,D_a,T]
+        visual_t = visual.transpose(1, 2)                   # [B,D_v,T]
+        proj_a = self.proj_a(acoustic_t).transpose(1, 2)    # [B,T,d_l]
+        proj_v = self.proj_v(visual_t).transpose(1, 2)      # [B,T,d_l]
+        out_a = self.transa(proj_a)                         # [B,T,d_l]
+        out_v = self.transv(proj_v)                         # [B,T,d_l]
 
-
-        acoustic = acoustic.transpose(1, 2)  # 转置 [32,50,74] > [32,74,50 text_len] 
-        visual = visual.transpose(1, 2)
-
-        # Debug: 检查投影层输入是否包含NaN
-        if torch.isnan(acoustic).any():
-            print(f"[DEBUG] NaN detected in acoustic before projection!")
-            acoustic = torch.nan_to_num(acoustic, nan=0.0, posinf=1.0, neginf=-1.0)
-            
-        if torch.isnan(visual).any():
-            print(f"[DEBUG] NaN detected in visual before projection!")
-            visual = torch.nan_to_num(visual, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        acoustic = self.proj_a(acoustic)  # 卷积 [32,74,50text_len] >[32,50,50text_len]
-        visual = self.proj_v(visual)
-        
-        # Debug: 检查投影层输出是否包含NaN
-        if torch.isnan(acoustic).any():
-            print(f"[DEBUG] NaN detected in acoustic after projection!")
-            acoustic = torch.nan_to_num(acoustic, nan=0.0, posinf=1.0, neginf=-1.0)
-            
-        if torch.isnan(visual).any():
-            print(f"[DEBUG] NaN detected in visual after projection!")
-            visual = torch.nan_to_num(visual, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        acoustic = acoustic.permute(2, 0, 1)  # 维度排列 [32,50,50text_len] >[50text_len,32,50]
-        visual = visual.permute(2, 0, 1)
-
-        outputa = self.transa(acoustic)  # [50text_len,32,50] > [50text_len,32,50]
-        outputv = self.transv(visual)
-        output_aa = outputa[-1]  # 最后一个时间步的输出 48 50
-        output_vv = outputv[-1]
-
-        output_l = output_l_alld  # torch.Size([32, 50, 50text_len])
-
-        output_l = output_l.permute(0, 2, 1)  # [32, 50, 50text_len] > [32,50text_len,50]
-        
-        output_a = outputa.permute(1, 0, 2)  # [50text_len,32,50] > [32,50text_len,50]
-        output_v = outputv.permute(1, 0, 2)
-
-        # Debug: 检查transformer输出是否包含NaN
-        if torch.isnan(output_l).any():
-            print(f"[DEBUG] NaN detected in BERT output_l!")
-            output_l = torch.nan_to_num(output_l, nan=0.0, posinf=1.0, neginf=-1.0)
-            
-        if torch.isnan(output_a).any():
-            print(f"[DEBUG] NaN detected in acoustic transformer output!")
-            output_a = torch.nan_to_num(output_a, nan=0.0, posinf=1.0, neginf=-1.0)
-            
-        if torch.isnan(output_v).any():
-            print(f"[DEBUG] NaN detected in visual transformer output!")
-            output_v = torch.nan_to_num(output_v, nan=0.0, posinf=1.0, neginf=-1.0)
-
-        # 使用 attention_mask 做掩码平均，避免 padding 时间步稀释特征
+        # attention_mask-aware average pooling over time
         if attention_mask is not None:
-            # attention_mask: [B, T]
-            mask = attention_mask.float().unsqueeze(-1)  # [B, T, 1]
-            valid = mask.sum(dim=1).clamp_min(1.0)       # [B, 1, 1] after broadcast
-            output_l_avg = (output_l * mask).sum(dim=1) / valid
-            output_a_avg = (output_a * mask).sum(dim=1) / valid
-            output_v_avg = (output_v * mask).sum(dim=1) / valid
+            mask = attention_mask.float().unsqueeze(-1)  # [B,T,1]
+            valid = mask.sum(dim=1).clamp_min(1.0)
+            l_avg = (output_l * mask).sum(dim=1) / valid
+            a_avg = (out_a * mask).sum(dim=1) / valid
+            v_avg = (out_v * mask).sum(dim=1) / valid
         else:
-            output_l_avg = output_l.mean(dim=1)
-            output_a_avg = output_a.mean(dim=1)
-            output_v_avg = output_v.mean(dim=1)
+            l_avg = output_l.mean(dim=1)
+            a_avg = out_a.mean(dim=1)
+            v_avg = out_v.mean(dim=1)
 
-        outputf, loss_u = self.fusion(output_l_avg, output_a_avg, output_v_avg)
-        outputf = outputf.squeeze(-1)
+        logits, mi_loss = self.fusion(l_avg, a_avg, v_avg)
+        logits = logits.squeeze(-1)
 
-        # Debug: 检查模型输出的统计信息
-        if not hasattr(self, '_output_check_count'):
-            self._output_check_count = 0
+        loss = self.loss_fct(logits.view(-1).float(), label_ids.view(-1).float())
         
-        self._output_check_count += 1
-        if self._output_check_count <= 3:  # 只打印前3次
-            print(f"[DEBUG] Model output stats - min: {outputf.min().item():.6f}, max: {outputf.max().item():.6f}, mean: {outputf.mean().item():.6f}, std: {outputf.std().item():.6f}")
-
-        # Debug: 检查数值稳定性
-        if torch.isnan(output_l_avg).any() or torch.isnan(output_a_avg).any() or torch.isnan(output_v_avg).any():
-            print(f"[WARNING] NaN detected in averaged features!")
-            
-            # 替换NaN为零
-            output_l_avg = torch.nan_to_num(output_l_avg, nan=0.0, posinf=1.0, neginf=-1.0)
-            output_a_avg = torch.nan_to_num(output_a_avg, nan=0.0, posinf=1.0, neginf=-1.0)
-            output_v_avg = torch.nan_to_num(output_v_avg, nan=0.0, posinf=1.0, neginf=-1.0)
         
-        if torch.isnan(outputf).any():
-            print(f"[WARNING] NaN detected in model output!")
-            outputf = torch.nan_to_num(outputf, nan=0.0, posinf=1.0, neginf=-1.0)
-            
-        # 限制输出范围防止极值
-        outputf = torch.clamp(outputf, min=-3.0, max=3.0)  # 更严格的范围限制
-        
-        # 额外的数值稳定性检查
-        if torch.isnan(outputf).any() or torch.isinf(outputf).any():
-            print(f"[WARNING] Invalid values detected after clamping, replacing with zeros")
-            outputf = torch.zeros_like(outputf)
-       
-        loss_fct = self.loss_fct(outputf.view(-1).float(), label_ids.view(-1).float()) 
-        loss = loss_fct+ loss_u
-        return outputf, loss
+        if  mi_loss!=0:
+            if torch.isfinite(mi_loss).all():
+                loss = loss + self.mi_weight * mi_loss
 
-
-
-    def test(self,
-        input_ids,
-        visual,
-        acoustic,
-        attention_mask=None,
-        token_type_ids=None,
-        position_ids=None,
-        head_mask=None,
-        inputs_embeds=None,
-        labels=None,
-        output_attentions=None,
-        output_hidden_states=None,):
-
-        output_l, output_l_alld = self.bert(
-            input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-            position_ids=position_ids,
-            head_mask=head_mask,
-            inputs_embeds=inputs_embeds,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,)
-
-        acoustic = acoustic.transpose(1, 2)
-        visual = visual.transpose(1, 2)
-
-        acoustic = self.proj_a(acoustic)
-        visual = self.proj_v(visual)
-
-        acoustic = acoustic.permute(2, 0, 1)
-        visual = visual.permute(2, 0, 1)
-
-        outputa = self.transa(acoustic)
-        outputv = self.transv(visual)
-        output_a = outputa[-1]  # 48 50
-        output_v = outputv[-1]
-
-        output_l = output_l_alld
-        output_l = output_l.permute(0, 2, 1)  # [32, 50, 50text_len] > [32,50text_len,50]
-        output_a = outputa.permute(1, 0, 2)  # [50text_len,32,50] > [32,50text_len,50]
-        output_v = outputv.permute(1, 0, 2)
-
-        output_l_avg = output_l.mean(dim=1)
-        output_a_avg = output_a.mean(dim=1)
-        output_v_avg = output_v.mean(dim=1)
-
-        outputf = self.fusion(output_l_avg, output_a_avg, output_v_avg)
-        outputf = outputf.squeeze(-1)
-
-        return outputf
+        return logits, loss
 
 
 class My_DIB_Fusion(nn.Module):
-    def __init__(self, num_latents, dim):
+    """Cross-modal attention + VAE-style latent + MI loss (robust)"""
+    def __init__(self, num_latents: int, d_l: int):
         super().__init__()
-
-        self.d_l = dim
+        self.d_l = d_l
         self.num_latents = num_latents
-        
-        # build encoder
-        self.encoder_l = nn.Sequential(nn.Linear(self.d_l, 1024),
-                                   #  nn.ReLU(inplace=True),
-                                    # nn.Linear(1024, 1024),
-                                     nn.ReLU(inplace=True) )  
 
+        # Per-modality encoders
+        def enc_block(in_dim):
+            return nn.Sequential(
+                nn.Linear(in_dim, 512), nn.ReLU(inplace=True),
+                nn.Linear(512, 1024), nn.ReLU(inplace=True),
+            )
+        self.encoder_l = enc_block(d_l)
+        self.encoder_a = enc_block(d_l)
+        self.encoder_v = enc_block(d_l)
+        self.encoder = enc_block(d_l * 4)
 
-        self.encoder_a = nn.Sequential(nn.Linear(self.d_l, 1024),
-                                   #  nn.ReLU(inplace=True),
-                                    # nn.Linear(1024, 1024),
-                                     nn.ReLU(inplace=True) )  
+        # Latent heads
+        self.fc_mu_l = nn.Linear(1024, d_l)
+        self.fc_std_l = nn.Linear(1024, d_l)
+        self.fc_mu_a = nn.Linear(1024, d_l)
+        self.fc_std_a = nn.Linear(1024, d_l)
+        self.fc_mu_v = nn.Linear(1024, d_l)
+        self.fc_std_v = nn.Linear(1024, d_l)
+        self.fc_mu = nn.Linear(1024, d_l)
+        self.fc_std = nn.Linear(1024, d_l)
 
-        self.encoder_v = nn.Sequential(nn.Linear(self.d_l, 1024),
-                                   #  nn.ReLU(inplace=True),
-                                    # nn.Linear(1024, 1024),
-                                     nn.ReLU(inplace=True) )  
-        # 融合后的 z_l, z_a, z_v 会被拼接，因此编码器输入应为 3 * d_l
-        self.encoder = nn.Sequential(
-            nn.Linear(self.d_l * 3, 1024),
-            nn.ReLU(inplace=True)
-        )
+        # Decoder
+        def dec_block():
+            m = nn.Sequential(
+                nn.Linear(d_l, 64),
+                nn.ReLU(inplace=True),
+                nn.Linear(64, 1)
+            )
+            # 将最后一层偏置初始化为 0，避免强常数项影响早期学习
+            if isinstance(m[-1], nn.Linear) and m[-1].bias is not None:
+                nn.init.zeros_(m[-1].bias)
+            return m
+        self.decoder = dec_block()
 
-        self.fc_mu_l  = nn.Linear(1024, self.d_l) 
-        self.fc_std_l = nn.Linear(1024, self.d_l)
+        # cross-modal attention
+        self.cross_modal_attn = nn.MultiheadAttention(embed_dim=d_l, num_heads=5, batch_first=True)
 
-        self.fc_mu_a  = nn.Linear(1024, self.d_l) 
-        self.fc_std_a = nn.Linear(1024, self.d_l)
+        # pre-encode norm and residual skip from attn_fusion
+        self.pre_encode_ln = nn.LayerNorm(d_l * 4)
+        # 放大初值，保证早期就有可变输出和有效梯度通路
+        self.skip_gate = nn.Parameter(torch.tensor(1.0))
+        self.skip = nn.Linear(d_l, 1)
 
-        self.fc_mu_v  = nn.Linear(1024, self.d_l) 
-        self.fc_std_v = nn.Linear(1024, self.d_l)
+        # MI buffers to stabilize small-batch MI
+        self.mi_buf_size = 32
+        self.register_buffer('mi_buf_z', torch.empty(0, d_l))
+        self.register_buffer('mi_buf_f', torch.empty(0, d_l * 4))
 
-        self.fc_mu  = nn.Linear(1024, self.d_l) 
-        self.fc_std = nn.Linear(1024, self.d_l)
-        
-        # build decoder
-        self.decoder_l = nn.Linear(self.d_l, 1)
-        self.decoder_a = nn.Linear(self.d_l, 1)
-        self.decoder_v = nn.Linear(self.d_l, 1)
-        self.decoder = nn.Linear(self.d_l, 1)
-
-
-        self.fusion1 = None
-        # self.fusion1 = graph_fusion(self.d_l, self.d_l)
-        # self.fusion1 = concat(self.d_l, self.d_l)
-        # self.fusion1 = bottleneckFusion(self.num_latents, self.d_l, self.d_l) 
-        # self.fusion1 = low_rank(self.d_l, self.d_l)
+    # --- helpers ---
+    def _std(self, x):
+        return F.softplus(x - 5.0, beta=1.0)
 
     def encode(self, x):
-        """
-        x : [batch_size,784]
-        """
         x = self.encoder(x)
-        return self.fc_mu(x), F.softplus(self.fc_std(x)-5, beta=1)
+        return self.fc_mu(x), self._std(self.fc_std(x))
 
     def encode_l(self, x):
-        """
-        x : [batch_size,784]
-        """
         x = self.encoder_l(x)
-        return self.fc_mu_l(x), F.softplus(self.fc_std_l(x)-5, beta=1)
+        return self.fc_mu_l(x), self._std(self.fc_std_l(x))
 
     def encode_a(self, x):
-        """
-        x : [batch_size,784]
-        """
         x = self.encoder_a(x)
-        return self.fc_mu_a(x), F.softplus(self.fc_std_a(x)-5, beta=1)
+        return self.fc_mu_a(x), self._std(self.fc_std_a(x))
 
     def encode_v(self, x):
-        """
-        x : [batch_size,784]
-        """
         x = self.encoder_v(x)
-        return self.fc_mu_v(x), F.softplus(self.fc_std_v(x)-5, beta=1)
-    
-    def decode_l(self, z):
+        return self.fc_mu_v(x), self._std(self.fc_std_v(x))
 
-        return self.decoder_l(z)
-
-    def decode_a(self, z):
-
-        return self.decoder_a(z)
-
-    def decode(self, z):
-
-        return self.decoder(z)
-
-    def decode_v(self, z):
-
-        return self.decoder_v(z)
-    
     def reparameterise(self, mu, std):
-        """
-        mu : [batch_size,z_dim]
-        std : [batch_size,z_dim]        
-        """        
-        # get epsilon from standard normal
         eps = torch.randn_like(std)
-        return mu + std*eps
+        return mu + std * eps
 
-    def loss_function(self, y_pred, y, mu, std): 
-   
-        loss_fct = L1Loss()
-
-        CE = loss_fct(y_pred.view(-1,), y.view(-1,))
-        KL = 0.5 * torch.mean(mu.pow(2) + std.pow(2) - 2*std.log() - 1)
-        return (beta*KL + CE) 
-
+    # pairwise/gram for MI
     def pairwise_distances(self, x):
         bn = x.shape[0]
         x = x.view(bn, -1)
-        instances_norm = torch.sum(x ** 2, -1).reshape((-1, 1))
-        return -2 * torch.mm(x, x.t()) + instances_norm + instances_norm.t()
+        inst_norm = torch.sum(x ** 2, -1).reshape((-1, 1))
+        return -2 * torch.mm(x, x.t()) + inst_norm + inst_norm.t()
 
     def calculate_gram_mat(self, x, sigma):
-        dist = self.pairwise_distances(x)
-        return torch.exp(-dist / sigma)
+        # 强制在 FP32 下计算核矩阵，提升稳定性
+        with torch.amp.autocast('cuda', enabled=False):
+            x32 = x.float()
+            dist = self.pairwise_distances(x32)
+            sigma_safe = max(float(sigma), 1e-6)
+            K = torch.exp(-dist / sigma_safe)
+            # 对称化，避免数值误差导致非对称
+            K = 0.5 * (K + K.transpose(0, 1))
+            if self.training:
+                # 更强抖动，且与规模相关，缓解病态情况
+                jitter = 1e-5 * K.shape[0]
+                I = torch.eye(K.shape[0], device=K.device, dtype=K.dtype)
+                K = K + jitter * I
+        return K
 
-    def calculate_lowrank(self, A, alpha, k, v, batch_size=48):  # 核矩阵是batch_size * batch_size
+    def calculate_lowrank(self, A, alpha, k, v, batch_size=48):
         n = A.shape[0]
-        # 确保初始向量维度与dtype正确
+        if n < 2:
+            return torch.tensor(1e-6, device=A.device)
+        if k >= n:
+            k = max(1, n - 1)
         if n != batch_size:
             v = np.random.randn(n)
         v = np.asarray(v, dtype=np.float64).reshape(-1)
         try:
-            # 强制转为float64以避免SciPy/Numpy dtype不兼容
-            A_np = A.detach().cpu().numpy().astype(np.float64, copy=False)
-            _, U = scipy.sparse.linalg.eigsh(A_np, k=min(k, max(1, n-1)), v0=v[:n], ncv=min(12, max(2, n)), tol=1e-1)
-            U = torch.from_numpy(U).to(A.device)
-            eigs = torch.clamp(torch.linalg.eigvalsh(torch.mm(U.t(), torch.mm(A, U))), min=0)
+            if n <= 64:
+                eigs = torch.linalg.eigvalsh(A)
+                eigs = torch.clamp(eigs, min=0)
+            else:
+                A_np = A.detach().cpu().numpy().astype(np.float64, copy=False)
+                use_k = min(k, n - 1)
+                _, U = scipy.sparse.linalg.eigsh(A_np, k=use_k, v0=v[:n], ncv=min(12, max(2, n)), tol=1e-1)
+                U = torch.from_numpy(U).to(A.device)
+                eigs = torch.clamp(torch.linalg.eigvalsh(torch.mm(U.t(), torch.mm(A, U))), min=0)
             tr = torch.sum(eigs ** alpha) + (n - k) * torch.clamp((1 - torch.sum(eigs)) / max(1, (n - k)), min=0) ** alpha
-            return (1 / (1 - alpha)) * torch.log2(tr) if tr >= 1e-6 else torch.zeros(1, device=A.device)
+            return (1 / (1 - alpha)) * torch.log2(torch.clamp(tr, min=1e-6))
         except Exception as _e:
-            # 降级：返回0，避免训练中断
-            # print(f"[DEBUG] eigsh failed: {_e}")
-            return torch.zeros(1, device=A.device)
+            print(f"[DEBUG] eigsh failed: {_e}")
+            return torch.tensor(1e-6, device=A.device)
 
     def calculate_MI_lowrank(self, x, y, s_x, s_y, alpha, k, v):
         ky = self.calculate_gram_mat(y, s_y)
-        # kxy = calculate_gram_mat(x, s_x) * ky
-        ky = ky / torch.trace(ky)
-        # kxy = kxy / torch.trace(kxy)
-        return self.calculate_lowrank(ky, alpha, k, v) #- calculate_lowrank(kxy, alpha, k, v)
+        tr = torch.trace(ky)
+        if tr <= 1e-8 or not torch.isfinite(tr):
+            tr = torch.tensor(1.0, device=ky.device)
+        ky = ky / tr
+        return self.calculate_lowrank(ky, alpha, k, v)
 
-    """-LRIB代码"""
-    def forward(
-        self,
-        x_l,
-        x_a,
-        x_v,
-    ): 
-     
+    def forward(self, x_l, x_a, x_v):
+        # enc per modality
         mu_l, std_l = self.encode_l(x_l)
         z_l = self.reparameterise(mu_l, std_l)
-        # output_l =  self.decode_l(z_l)
- 
-
-        query_l = np.random.randn(32) 
-        with torch.no_grad():
-            Z_numpy_l = z_l.cpu().detach().numpy()
-            Z_numpy_l = np.reshape(Z_numpy_l, (Z_numpy_l.shape[0]*Z_numpy_l.shape[1], -1))
-            k_z_l = squareform(pdist(Z_numpy_l, 'euclidean'))
-            sigma_z_l = np.mean(np.mean(np.sort(k_z_l, axis=1)[:, -5:]))  # 按行升序排，取前xx列
-
-        IXZ_l = self.calculate_MI_lowrank(x_l, z_l, s_x=1, s_y=sigma_z_l ** 2, alpha=1.9, k=10, v=query_l) 
-        loss_l = 1e-5 * IXZ_l
-
-
-        # -----------------------------------------Audio
         mu_a, std_a = self.encode_a(x_a)
         z_a = self.reparameterise(mu_a, std_a)
-        # output_a =  self.decode_a(z_a)
-
-        query_a = np.random.randn(32)
-        with torch.no_grad():
-            Z_numpy_a = z_a.cpu().detach().numpy()
-            Z_numpy_a = np.reshape(Z_numpy_a, (Z_numpy_a.shape[0]*Z_numpy_a.shape[1], -1))
-            k_z_a = squareform(pdist(Z_numpy_a, 'euclidean'))
-            sigma_z_a = np.mean(np.mean(np.sort(k_z_a, axis=1)[:, -5:]))
-
-        IXZ_a = self.calculate_MI_lowrank(x_a, z_a, s_x=1, s_y=sigma_z_a ** 2, alpha=1.9, k=10, v=query_a) 
-        loss_a = 1e-5 * IXZ_a
-
-        # -----------------------------------------Visual
-        mu_v, std_v = self.encode_v(x_v)  # x_v相当于x
-        z_v = self.reparameterise(mu_v, std_v)  # z_v相当于z
-        # output_v =  self.decode_v(z_v)  # output_v相当于y
-        
-        query_v = np.random.randn(32)
-        with torch.no_grad():
-            Z_numpy_v = z_v.cpu().detach().numpy()
-            Z_numpy_v = np.reshape(Z_numpy_v, (Z_numpy_v.shape[0]*Z_numpy_v.shape[1], -1))
-            k_z_v = squareform(pdist(Z_numpy_v, 'euclidean'))
-            sigma_z_v = np.mean(np.mean(np.sort(k_z_v, axis=1)[:, -5:]))
-
-        IXZ_v = self.calculate_MI_lowrank(x_v, z_v, s_x=65, s_y=sigma_z_v ** 2, alpha=1.9, k=10, v=query_v) 
-        loss_v = 1e-5 * IXZ_v
-
-        # outputf = torch.cat([z_l, z_a, z_v], dim=-1)
-
-        # -----------------------------------------三个模态融合后的loss
-        # outputf = self.fusion1(x_l, x_a, x_v)  # outputf对应图中的x [32, 50, 50] > [32,50]
-        # outputf = self.fusion1(z_l, z_a, z_v)
-        outputf = torch.cat([z_l, z_a, z_v], dim=-1)
-        mu, std = self.encode(outputf)
-        z = self.reparameterise(mu, std)  # z相当于z
-        output =  self.decode(z)  # output相当于y
-        query = np.random.randn(32)
-        with torch.no_grad():
-            # x_numpy = inputs.view(inputs.shape[0], -1).cpu().detach().numpy()
-            # k_x = squareform(pdist(x_numpy, 'euclidean'))
-            # sigma_x = np.mean(np.mean(np.sort(k_x[:, :10], 1)))
-
-            Z_numpy = z.cpu().detach().numpy()
-            # Z_numpy = np.reshape(Z_numpy, (Z_numpy.shape[0]*Z_numpy.shape[1], -1))
-            k_z = squareform(pdist(Z_numpy, 'euclidean'))
-            sigma_z = np.mean(np.mean(np.sort(k_z, axis=1)[:, -5:]))
-
-            IXZ = self.calculate_MI_lowrank(outputf, z, s_x=1000, s_y=sigma_z ** 2, alpha=1.9, k=10, v=query)  
-            loss = 1e-5 * IXZ
-
-        # 仅返回回归输出；MI项用于正则化可在内部消耗
-        return output, loss_l + loss_a + loss_v + loss
-
-
-    def test(self, x_l, x_a, x_v):
-
-        mu_l, std_l = self.encode_l(x_l)
-        z_l = self.reparameterise(mu_l, std_l)
-        # output_l =  self.decode_l(z_l)
-
-        mu_a, std_a = self.encode_a(x_a)
-        z_a = self.reparameterise(mu_a, std_a)
-        # output_a =  self.decode_a(z_a)
-
         mu_v, std_v = self.encode_v(x_v)
         z_v = self.reparameterise(mu_v, std_v)
-        # output_v =  self.decode_v(z_v)
- 
-        # outputf = self.fusion1(z_l, z_a, z_v)
-        outputf = torch.cat([z_l, z_a, z_v], dim=-1)
 
-        mu, std = self.encode(outputf)
+        # cross-modal attn
+        z_stack = torch.stack([z_l, z_a, z_v], dim=1)
+        attn_output, _ = self.cross_modal_attn(z_stack, z_stack, z_stack)
+        attn_fusion = attn_output.mean(dim=1)
+
+        # fuse + latent
+        f = torch.cat([attn_fusion, z_l, z_a, z_v], dim=-1)
+        f = self.pre_encode_ln(f)
+        mu, std = self.encode(f)
         z = self.reparameterise(mu, std)
-        output =  self.decode(z)
-    
-        return output
+        if self.training and z.shape[0] < 4:
+            z = z + 1e-3 * torch.randn_like(z)
+        out = self.decoder(z) + self.skip_gate * self.skip(attn_fusion)
+
+        # MI over buffer
+        def robust_sigma(Z_numpy, last_sigma=[1.0]):
+            try:
+                k_z = squareform(pdist(Z_numpy, 'euclidean'))
+                if k_z.size > 1:
+                    iu = np.triu_indices_from(k_z, k=1)
+                    vals = k_z[iu]
+                    vals = vals[vals > 0]
+                    sigma = np.median(vals) if vals.size > 0 else np.mean(k_z)
+                else:
+                    sigma = float(last_sigma[0])
+                if sigma < 1e-6:
+                    sigma = last_sigma[0]
+                else:
+                    last_sigma[0] = sigma
+            except Exception:
+                sigma = last_sigma[0]
+            return sigma
+
+        # Build temporary buffers with current batch to compute MI loss with gradient
+        tmp_f = torch.cat([self.mi_buf_f.detach(), f], dim=0)[-self.mi_buf_size:]
+        tmp_z = torch.cat([self.mi_buf_z.detach(), z], dim=0)[-self.mi_buf_size:]
+        n = tmp_z.shape[0]
+        alpha = 1.9
+        if n >= 8:
+            # sigma estimated from detached numpy (no grad needed for sigma)
+            try:
+                Z_numpy = tmp_z.detach().cpu().numpy()
+                sigma_z = robust_sigma(Z_numpy)
+            except Exception:
+                sigma_z = 1.0
+            # 在 FP32 且关闭 AMP 下计算 MI，避免半精度导致的本征分解不收敛
+            with torch.amp.autocast('cuda', enabled=False):
+                Ky = self.calculate_gram_mat(tmp_z.float(), sigma_z ** 2)
+                # 归一化 trace 并再次对称化
+                tr = torch.trace(Ky)
+                if not torch.isfinite(tr) or float(tr.item()) <= 1e-8:
+                    tr = torch.tensor(1.0, device=Ky.device, dtype=Ky.dtype)
+                Ky = Ky / tr
+                Ky = 0.5 * (Ky + Ky.transpose(0, 1))
+                # 再次加小抖动，确保严格正定
+                eps = 1e-6 * Ky.shape[0]
+                Ky = Ky + eps * torch.eye(Ky.shape[0], device=Ky.device, dtype=Ky.dtype)
+                # Renyi entropy surrogate via eigenvalues
+                try:
+                    eigs = torch.linalg.eigvalsh(Ky)
+                except Exception:
+                    # 回退：使用奇异值或均匀分布，保持训练不中断
+                    try:
+                        s = torch.linalg.svdvals(Ky)
+                        eigs = torch.clamp(s, min=1e-12)
+                    except Exception:
+                        eigs = torch.full((Ky.shape[0],), 1.0 / max(Ky.shape[0], 1), device=Ky.device, dtype=Ky.dtype)
+                eigs = torch.clamp(eigs, min=1e-12)
+                tr_alpha = torch.sum(eigs ** alpha)
+                mi_loss = (1.0 / (1.0 - alpha)) * torch.log2(torch.clamp(tr_alpha, min=1e-12))
+        else:
+            mi_loss = torch.tensor(0.0, device=out.device)
+
+        # Update persistent buffers without gradient tracking (for next steps)
+        with torch.no_grad():
+            self.mi_buf_f = torch.cat([self.mi_buf_f, f.detach()], dim=0)[-self.mi_buf_size:]
+            self.mi_buf_z = torch.cat([self.mi_buf_z, z.detach()], dim=0)[-self.mi_buf_size:]
+
+        return out, mi_loss
+
+    def test(self, x_l, x_a, x_v):
+        mu_l, std_l = self.encode_l(x_l)
+        z_l = self.reparameterise(mu_l, std_l)
+        mu_a, std_a = self.encode_a(x_a)
+        z_a = self.reparameterise(mu_a, std_a)
+        mu_v, std_v = self.encode_v(x_v)
+        z_v = self.reparameterise(mu_v, std_v)
+        z_stack = torch.stack([z_l, z_a, z_v], dim=1)
+        attn_output, _ = self.cross_modal_attn(z_stack, z_stack, z_stack)
+        attn_fusion = attn_output.mean(dim=1)
+        f = torch.cat([attn_fusion, z_l, z_a, z_v], dim=-1)
+        f = self.pre_encode_ln(f)
+        mu, std = self.encode(f)
+        z = self.reparameterise(mu, std)
+        return self.decoder(z) + self.skip_gate * self.skip(attn_fusion)
 
-
-class LRIBModule(nn.Module):
-    def __init__(self, z_dim=50):
-        super().__init__()
-        self.z_dim = z_dim
-
-    def reparameterize(self, mu, std):
-        eps = torch.randn_like(std)
-        return mu + std * eps
-
-    def encode(self, x):
-        # x: [batch_size, z_dim]
-        x = F.relu(x)
-        mu = nn.Linear(self.z_dim, self.z_dim)(x)
-        std = nn.functional.softplus(nn.Linear(self.z_dim, self.z_dim)(x) - 5, beta=1)
-        return mu, std
-
-    def pairwise_distances(self, x):
-        bn = x.shape[0]
-        x = x.view(bn, -1)
-        instances_norm = torch.sum(x ** 2, -1).reshape((-1, 1))
-        return -2 * torch.mm(x, x.t()) + instances_norm + instances_norm.t()
-
-    def calculate_gram_mat(self, x, sigma):
-        dist = self.pairwise_distances(x)
-        return torch.exp(-dist / sigma)
-
-    def calculate_lowrank(self, A, alpha, k, v, batch_size=48):
-        n = A.shape[0]
-        if n != batch_size:
-            v = np.random.randn(n)
-        try:
-            _, U = scipy.sparse.linalg.eigsh(A.detach().cpu().numpy(), k=k, v0=v, ncv=12, tol=1e-1)
-            U = torch.from_numpy(U).to(A.device)
-            eigs = torch.clamp(torch.linalg.eigvalsh(torch.mm(U.t(), torch.mm(A, U))), min=0)
-        except:
-            print("low-rank approximation failed")
-            return torch.zeros(1, device=A.device)
-        tr = torch.sum(eigs ** alpha) + (n - k) * torch.clamp((1 - torch.sum(eigs)) / (n - k), min=0) ** alpha
-        return (1 / (1 - alpha)) * torch.log2(tr) if tr >= 1e-6 else torch.zeros(1, device=A.device)
-
-    def calculate_MI_lowrank(self, x, z, s_x, s_z, alpha, k, v):
-        kz = self.calculate_gram_mat(z, s_z)
-        kz = kz / torch.trace(kz)
-        return self.calculate_lowrank(kz, alpha, k, v)
-
-
-
-
-class My_Graph_fusion(nn.Module):
-
-    def __init__(self, in_size, output_dim, hidden = 50, dropout=0.5):
-
-        super(My_Graph_fusion, self).__init__()
-        self.norm = nn.BatchNorm1d(in_size)
-        self.norm2 = nn.BatchNorm1d(in_size*3)
-        self.drop = nn.Dropout(p=dropout)
-      #  self.graph = nn.Linear(in_size*2, in_size)
-
-        self.graph_fusion = nn.Sequential(
-            nn.Linear(in_size*2, 64),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(64, in_size),
-            nn.Tanh()
-        )
-
-
-        self.graph_fusion2 = nn.Sequential(
-            nn.Linear(in_size*2, 64),
-            nn.LeakyReLU(0.2, inplace=True),
-            nn.Linear(64, in_size),
-            nn.Tanh()
-        )
-
-        self.attention = nn.Linear(in_size, 1)
-        self.linear_1 = nn.Linear(in_size*3, hidden)
-        self.linear_2 = nn.Linear(hidden, hidden)
-        self.linear_3 = nn.Linear(hidden, output_dim)
-    #    self.rnn = nn.LSTM(in_size, hidden, num_layers=2, dropout=dropout, bidirectional=True, batch_first=True)
-  #      self.linear_3 = nn.Linear(hidden_size, hidden_size)
-      #  self.lstm1 = nn.LSTMCell(in_size,hidden)
-        self.hidden = hidden
-        self.in_size = in_size
-
-      #  self.u1 = Parameter(torch.Tensor(in_size, in_size).cuda())
-     #   xavier_normal(self.u1)
-
-    def forward(self, l1, a1, v1):
-       # a1 = x[:,0,:]; v1 = x[:,1,:]; l1 = x[:,2,:]
-        ###################### unimodal layer  ##########################
-        sa = torch.tanh(self.attention(a1))
-        sv = torch.tanh(self.attention(v1))
-        sl = torch.tanh(self.attention(l1))
-
-        total_weights = torch.cat([sa, sv, sl],1)
-      #  total_weights = torch.cat([total_weights,sl],1)
-
-        unimodal_a = (sa.expand(a1.size(0),self.in_size))
-        unimodal_v = (sv.expand(a1.size(0),self.in_size))
-        unimodal_l = (sl.expand(a1.size(0),self.in_size))
-        sa = sa.squeeze(1)
-        sl = sl.squeeze(1)
-        sv = sv.squeeze(1)
-        unimodal = (unimodal_a * a1 + unimodal_v * v1 + unimodal_l * l1)/3
-
-        ##################### bimodal layer ############################
-        a = F.softmax(a1, 1)
-        v = F.softmax(v1, 1)
-        l = F.softmax(l1, 1)
-        sav = (1/(torch.matmul(a.unsqueeze(1), v.unsqueeze(2)).squeeze() +0.5) *(sa+sv))
-        sal = (1/(torch.matmul(a.unsqueeze(1), l.unsqueeze(2)).squeeze() +0.5) *(sa+sl))
-        svl = (1/(torch.matmul(v.unsqueeze(1), l.unsqueeze(2)).squeeze() +0.5) *(sl+sv))
-
-        normalize = torch.cat([sav.unsqueeze(1), sal.unsqueeze(1), svl.unsqueeze(1)],1)
-        normalize = F.softmax(normalize,1)
-        total_weights = torch.cat([total_weights,normalize],1)
-
-        a_v = torch.tanh((normalize[:,0].unsqueeze(1).expand(a.size(0), self.in_size)) * self.graph_fusion(torch.cat([a1,v1],1)))
-        a_l = torch.tanh((normalize[:,1].unsqueeze(1).expand(a.size(0), self.in_size)) * self.graph_fusion(torch.cat([a1,l1],1)))
-        v_l = torch.tanh((normalize[:,2].unsqueeze(1).expand(a.size(0), self.in_size)) * self.graph_fusion(torch.cat([v1,l1],1)))
-        bimodal = (a_v + a_l + v_l)
-    
-        ###################### trimodal layer ####################################
-        a_v2 = F.softmax(self.graph_fusion(torch.cat([a1,v1],1)), 1)
-        a_l2 = F.softmax(self.graph_fusion(torch.cat([a1,l1],1)), 1)
-        v_l2 = F.softmax(self.graph_fusion(torch.cat([v1,l1],1)), 1)
-        savvl = (1/(torch.matmul(a_v2.unsqueeze(1), v_l2.unsqueeze(2)).squeeze() +0.5) *(sav+svl))
-        saavl = (1/(torch.matmul(a_v2.unsqueeze(1), a_l2.unsqueeze(2)).squeeze() +0.5) *(sav+sal))
-        savll = (1/(torch.matmul(a_l2.unsqueeze(1), v_l2.unsqueeze(2)).squeeze() +0.5) *(sal+svl))
-        savl = (1/(torch.matmul(a_v2.unsqueeze(1), l.unsqueeze(2)).squeeze() +0.5) *(sav+sl))
-        salv = (1/(torch.matmul(a_l2.unsqueeze(1), v.unsqueeze(2)).squeeze() +0.5) *(sal+sv))
-        svla = (1/(torch.matmul(v_l2.unsqueeze(1), a.unsqueeze(2)).squeeze() +0.5) *(sa+svl))
-
-        normalize2 = torch.cat([savvl.unsqueeze(1), saavl.unsqueeze(1), savll.unsqueeze(1), savl.unsqueeze(1), salv.unsqueeze(1), svla.unsqueeze(1)],1)
-        normalize2 = F.softmax(normalize2,1)
-        total_weights = torch.cat([total_weights,normalize2],1)
-        avvl = torch.tanh((normalize2[:,0].unsqueeze(1).expand(a.size(0),self.in_size)) * self.graph_fusion2(torch.cat([a_v,v_l],1)))
-        aavl = torch.tanh((normalize2[:,1].unsqueeze(1).expand(a.size(0),self.in_size)) * self.graph_fusion2(torch.cat([a_v,a_l],1)))
-        avll = torch.tanh((normalize2[:,2].unsqueeze(1).expand(a.size(0),self.in_size)) * self.graph_fusion2(torch.cat([v_l,a_l],1)))
-        avl = torch.tanh((normalize2[:,3].unsqueeze(1).expand(a.size(0),self.in_size)) * self.graph_fusion2(torch.cat([a_v,l1],1)))
-        alv = torch.tanh((normalize2[:,4].unsqueeze(1).expand(a.size(0),self.in_size)) * self.graph_fusion2(torch.cat([a_l,v1],1)))
-        vla = torch.tanh((normalize2[:,5].unsqueeze(1).expand(a.size(0),self.in_size)) * self.graph_fusion2(torch.cat([v_l,a1],1)))
-        trimodal = (avvl + aavl + avll + avl + alv + vla)
-        fusion = torch.cat([unimodal,bimodal,trimodal],1)
-
-        y_1 = torch.tanh(self.linear_1(fusion))
-        y_1 = torch.tanh(self.linear_2(y_1))
-        y_2 = torch.tanh(self.linear_3(y_1))
-     #   y_3 = F.tanh(self.linear_3(y_2))
-
-        return y_2
-
-
-class Tensor(nn.Module):
-
-    def __init__(self, in_size, output_dim, hidden = 50, dropout=0.5):
-
-        super(Tensor, self).__init__()
-        self.norm = nn.BatchNorm1d(in_size)
-        self.norm2 = nn.BatchNorm1d(in_size)
-        self.drop = nn.Dropout(p=dropout)
-        self.graph = nn.Linear(in_size*2, in_size)
-
-
-        self.attention = nn.Linear(in_size, 1)
-        self.linear_1 = nn.Linear(in_size, hidden)
-        self.linear_2 = nn.Linear(hidden, hidden)
-        self.linear_3 = nn.Linear(hidden, 1)
-        self.rnn = nn.LSTM(in_size, hidden, num_layers=2, dropout=dropout, bidirectional=True, batch_first=True)
-  #      self.linear_3 = nn.Linear(hidden_size, hidden_size)
-        self.lstm1 = nn.LSTMCell(in_size,hidden)
-        self.hidden = hidden
-        self.in_size = in_size
-
-        self.u1 = Parameter(torch.Tensor(in_size, in_size).cuda())
-        xavier_normal(self.u1)
-
-        self.post_fusion_dropout = nn.Dropout(p=dropout)
-        self.post_fusion_layer_1 = nn.Linear((in_size + 1) * (in_size + 1) * (in_size + 1), hidden)
-        self.post_fusion_layer_2 = nn.Linear(hidden, hidden)
-        self.post_fusion_layer_3 = nn.Linear(hidden, output_dim)
-
-    def forward(self, l1, a1, v1):
-        DTYPE = torch.cuda.FloatTensor
-       # a1 = x[:,0,:]; v1 = x[:,1,:]; l1 = x[:,2,:]
-           
-        _audio_h = torch.cat((Variable(torch.ones(a1.size(0), 1).type(DTYPE), requires_grad=False), a1), dim=1)
-        _video_h = torch.cat((Variable(torch.ones(a1.size(0), 1).type(DTYPE), requires_grad=False), v1), dim=1)
-        _text_h = torch.cat((Variable(torch.ones(a1.size(0), 1).type(DTYPE), requires_grad=False), l1), dim=1)
-
-        fusion_tensor = torch.bmm(_audio_h.unsqueeze(2), _video_h.unsqueeze(1))
-        fusion_tensor = fusion_tensor.view(-1, (a1.size(1) + 1) * (a1.size(1) + 1), 1)
-        fusion_tensor = torch.bmm(fusion_tensor, _text_h.unsqueeze(1)).view(a1.size(0), -1)
-
-        post_fusion_dropped = self.post_fusion_dropout(fusion_tensor)
-        post_fusion_y_1 = F.tanh(self.post_fusion_layer_1(post_fusion_dropped))
-        post_fusion_y_2 = F.tanh(self.post_fusion_layer_2(post_fusion_y_1))
-        post_fusion_y_3 = F.tanh(self.post_fusion_layer_3(post_fusion_y_2))
-      #  output = post_fusion_y_3 * self.output_range + self.output_shift
-        y_2 = post_fusion_y_3
-
-
-        return y_2
-
-
-
-class Low_rank(nn.Module):
-
-    def __init__(self, in_size, output_dim,hidden = 50, dropout=0.5):
-
-        super(Low_rank, self).__init__()
-        self.norm = nn.BatchNorm1d(in_size)
-        self.norm2 = nn.BatchNorm1d(in_size)
-        self.drop = nn.Dropout(p=dropout)
-        self.graph = nn.Linear(in_size*2, in_size)
-
-
-        self.attention = nn.Linear(in_size, 1)
-        self.linear_1 = nn.Linear(in_size, hidden)
-        self.linear_2 = nn.Linear(hidden, hidden)
-        self.linear_3 = nn.Linear(hidden, 1)
-        self.rnn = nn.LSTM(in_size, hidden, num_layers=2, dropout=dropout, bidirectional=True, batch_first=True)
-  #      self.linear_3 = nn.Linear(hidden_size, hidden_size)
-        self.lstm1 = nn.LSTMCell(in_size,hidden)
-        self.hidden = hidden
-        self.in_size = in_size
-
-        self.rank = 5
-        self.output_dim = output_dim
-        self.audio_factor = Parameter(torch.Tensor(self.rank, in_size + 1, output_dim).cuda())
-        self.video_factor = Parameter(torch.Tensor(self.rank, in_size + 1, output_dim).cuda())
-        self.text_factor = Parameter(torch.Tensor(self.rank, in_size + 1, output_dim).cuda())
-        self.fusion_weights = Parameter(torch.Tensor(1, self.rank).cuda())
-        self.fusion_bias = Parameter(torch.Tensor(1, output_dim).cuda())
-
-        xavier_normal(self.audio_factor)
-        xavier_normal(self.video_factor)
-        xavier_normal(self.text_factor)
-        xavier_normal(self.fusion_weights)
-        xavier_normal(self.fusion_bias)
-
-        self.post_fusion_dropout = nn.Dropout(p=dropout)
-        self.post_fusion_layer_1 = nn.Linear((in_size + 1) * (in_size + 1) * (in_size + 1), hidden)
-        self.post_fusion_layer_2 = nn.Linear(hidden, hidden)
-        self.post_fusion_layer_3 = nn.Linear(hidden, output_dim)
-
-    def forward(self, l1, a1, v1):
-      #  a1 = x[:,0,:]; v1 = x[:,1,:]; l1 = x[:,2,:]
-        DTYPE = torch.cuda.FloatTensor
-        _audio_h = torch.cat((Variable(torch.ones(a1.size(0), 1).type(DTYPE), requires_grad=False), a1), dim=1)
-        _video_h = torch.cat((Variable(torch.ones(a1.size(0), 1).type(DTYPE), requires_grad=False), v1), dim=1)
-        _text_h = torch.cat((Variable(torch.ones(a1.size(0), 1).type(DTYPE), requires_grad=False), l1), dim=1)
-
-        fusion_audio = torch.matmul(_audio_h, self.audio_factor)
-        fusion_video = torch.matmul(_video_h, self.video_factor)
-        fusion_text = torch.matmul(_text_h, self.text_factor)
-        fusion_zy = fusion_audio * fusion_video * fusion_text
-
-        # output = torch.sum(fusion_zy, dim=0).squeeze()
-        # use linear transformation instead of simple summation, more flexibility
-        output = torch.matmul(self.fusion_weights, fusion_zy.permute(1, 0, 2)).squeeze() + self.fusion_bias
-        y_2 = output.view(-1, self.output_dim)
-
-
-        return y_2
-
-
-class multiplication(nn.Module):
-
-    def __init__(self, in_size, output_dim,hidden = 50, dropout=0.5):
-
-        super(multiplication, self).__init__()
-        self.norm = nn.BatchNorm1d(in_size)
-        self.norm2 = nn.BatchNorm1d(in_size)
-        self.drop = nn.Dropout(p=dropout)
-        self.graph = nn.Linear(in_size*2, in_size)
-
-
-        self.attention = nn.Linear(in_size, 1)
-        self.linear_1 = nn.Linear(in_size, hidden)
-        self.linear_2 = nn.Linear(hidden, hidden)
-        self.linear_3 = nn.Linear(hidden, output_dim)
-        self.rnn = nn.LSTM(in_size, hidden, num_layers=2, dropout=dropout, bidirectional=True, batch_first=True)
-        #      self.linear_3 = nn.Linear(hidden_size, hidden_size)
-        self.lstm1 = nn.LSTMCell(in_size,hidden)
-        self.hidden = hidden
-        self.in_size = in_size
-
-        self.u1 = Parameter(torch.Tensor(in_size, in_size).cuda())
-
-    def forward(self, l1, a1, v1):
-     
-      #  fusion = a1*v1
-        fusion = a1*v1*l1        
-      #  fusion = self.norm2(fusion)
-     #   fusion = self.drop(fusion)
-     #   y_1 = torch.tanh(self.linear_1(fusion))
-     #   y_1 = torch.tanh(self.linear_2(y_1))
-    #    y_2 = torch.tanh(self.linear_3(y_1))
-     #   y_3 = F.tanh(self.linear_3(y_2))
-
-        return fusion
-
-class bottleneckFusion(nn.Module):
-
-    def __init__(self, num_latents, in_size, output_dim, hidden = 50, dropout=0.5):
-
-        super(bottleneckFusion, self).__init__()
-        self.dropout = nn.Dropout(0.5) 
-        # Latents
-        self.num_latents = num_latents
-        self.latents = nn.Parameter(torch.empty(1,num_latents,50).normal_(std=0.02))  
-        self.scale_l = nn.Parameter(torch.zeros(1))
-        self.scale_a = nn.Parameter(torch.zeros(1))
-        self.scale_v = nn.Parameter(torch.zeros(1))
-
-        self.linear_1 = nn.Linear(in_size*3, output_dim)
-       # self.linear_1 = nn.Linear(in_size, hidden)
-    
-    def attention(self,q,k,v): # requires q,k,v to have same dim
-        B, N, C = q.shape
-        attn = (q @ k.transpose(-2, -1)) * (C ** -0.5) # scaling
-        attn = attn.softmax(dim=-1)
-        x = (attn @ v).reshape(B, N, C)
-        return x
-
-    def fusion_btn(self, l1, a1, v1):
-        # shapes
-        BS = l1.shape[0]
-        # concat all the tokens
-        concat_avt = torch.cat((l1,a1,v1),dim=1)
-        concat_la = torch.cat((l1,a1),dim=1)
-        concat_lv = torch.cat((l1,v1),dim=1)
-        concat_av = torch.cat((a1,v1),dim=1)
-        # cross attention (AVT -->> latents) 计算了latents与concat_之间的注意力分布，然后根据这个注意力分布对concat_进行加权求和，得到了融合后的特征表示fused_latents
-        # fused_la_latents = self.attention(q=self.latents.expand(BS,-1,-1), k=concat_la, v=concat_la)  # 
-        # fused_lv_latents = self.attention(q=self.latents.expand(BS,-1,-1), k=concat_lv, v=concat_lv) 
-        # fused_av_latents = self.attention(q=self.latents.expand(BS,-1,-1), k=concat_av, v=concat_av) 
-        fused_avt_latents = self.attention(q=self.latents.expand(BS,-1,-1), k=concat_avt, v=concat_avt)
-
-        # stacked_tensor = torch.stack([fused_av_latents, fused_lv_latents, fused_la_latents], dim=0)
-        # average_fused_tensor = torch.mean(stacked_tensor, dim=0)
-
-        # cross attention (latents -->> AVT)
-        l1 = l1 + self.attention(q=l1, k=fused_avt_latents, v=fused_avt_latents)  
-        a1 = a1 + self.scale_a * self.attention(q=a1, k=fused_avt_latents, v=fused_avt_latents)
-        v1 = v1 + self.scale_v * self.attention(q=v1, k=fused_avt_latents, v=fused_avt_latents)
-        
-        return l1, a1, v1
-
-
-    def forward(self, l1, a1, v1):
-        # input size: [bs,50]
-        for i in range(3):
-            l1, a1, v1 = self.fusion_btn(l1, a1, v1)  # [32,50text_len,50]
-        l1 = l1[:,-1,:]
-        # a1 = a1[:,-1,:]
-        # v1 = v1[:,-1,:]
-
-        # fusion = torch.cat([l1, a1, v1], dim=-1)
-
-        # y_1 = torch.relu(self.linear_1(fusion))
-
-        y_l = torch.relu(l1)
-
-        return y_l
 
 class My_concatFusion(nn.Module):
     def __init__(self, input_dim, output_dim, hidden=50, dropout=0.5):
@@ -1099,11 +436,10 @@ class My_concatFusion(nn.Module):
             print(f"[WARNING] NaN in fusion output!")
             output = torch.nan_to_num(output, nan=0.0, posinf=1.0, neginf=-1.0)
             
-        return output
+        return output, 0
 
     def test(self, l, a, v):
         return self.forward(l, a, v)
-
 
 
 

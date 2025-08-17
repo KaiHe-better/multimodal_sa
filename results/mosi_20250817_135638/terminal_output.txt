@@ -1,0 +1,219 @@
+Terminal output is now being logged to /data/hekai/WorkShop/My_project/multimodal_sa/results/mosi_20250817_135638/terminal_output.txt
+Experiment hyperparameters:
+  gpu: 5
+  dataset: mosi
+  max_seq_length: 50
+  train_batch_size: 32
+  dev_batch_size: 64
+  test_batch_size: 64
+  n_epochs: 500
+  beta_shift: 1.0
+  dropout_prob: 0.3
+  model: bert-base-uncased
+  learning_rate: 5e-06
+  plm_lr: 5e-06
+  fusion_lr: 0.0003
+  gradient_accumulation_step: 8
+  warmup_proportion: 0.2
+  seed: 24
+  save_results: True
+  output_dir: results
+  save_interval: 5
+  limit_steps_enabled: False
+  limit_steps: 30
+  freeze_plm_epochs: 10
+  mi_weight: 0.25
+  mi_sweep: 
+
+==================================================
+
+Starting experiment with mosi dataset
+Results will be saved to /data/hekai/WorkShop/My_project/multimodal_sa/results/mosi_20250817_135638
+[INFO] Converted 1281 valid samples from 1281 total samples
+[INFO] Converted 229 valid samples from 229 total samples
+[INFO] Converted 685 valid samples from 685 total samples
+1281
+total parameter for the model:  109969037
+执行自定义权重初始化...
+Optimizer groups -> PLM: 199 params @ lr=5.00e-06, Other: 34 params @ lr=3.00e-04
+[INFO] Epoch 0 completed: 6 valid steps, avg loss: 2.5956
+epoch:0, train_loss:2.5956, valid_loss:0.6823, test_acc:0.4656
+current mae:1.5067, acc@0:0.4656, acc7:0.1533, f1@0:0.3774, corr:0.0852, cal_thr:0.22, acc@cal:0.5282, f1@cal:0.5304
+*** New best performance at epoch 0! ***
+best mae:1.5067, acc:0.4656, acc7:0.1533, f1:0.3774, corr:0.0852 (epoch 0)
+[INFO] Current learning rate: 5.00e-06
+[INFO] Epoch 1 completed: 6 valid steps, avg loss: 2.1617
+epoch:1, train_loss:2.1617, valid_loss:0.6685, test_acc:0.4443
+current mae:1.5113, acc@0:0.4443, acc7:0.1474, f1@0:0.3208, corr:0.0614, cal_thr:0.20, acc@cal:0.5374, f1@cal:0.5351
+*** New best performance at epoch 1! ***
+best mae:1.5113, acc:0.4443, acc7:0.1474, f1:0.3208, corr:0.0614 (epoch 1)
+[INFO] Epoch 2 completed: 6 valid steps, avg loss: 2.0340
+epoch:2, train_loss:2.0340, valid_loss:0.6589, test_acc:0.4412
+current mae:1.5100, acc@0:0.4412, acc7:0.1504, f1@0:0.3063, corr:0.0528, cal_thr:0.20, acc@cal:0.5511, f1@cal:0.5523
+*** New best performance at epoch 2! ***
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 3 completed: 6 valid steps, avg loss: 1.9843
+epoch:3, train_loss:1.9843, valid_loss:0.6827, test_acc:0.4824
+current mae:1.5026, acc@0:0.4824, acc7:0.1504, f1@0:0.4038, corr:0.0295, cal_thr:0.16, acc@cal:0.5282, f1@cal:0.5303
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 4 completed: 6 valid steps, avg loss: 2.0093
+epoch:4, train_loss:2.0093, valid_loss:0.6888, test_acc:0.4519
+current mae:1.5186, acc@0:0.4519, acc7:0.1547, f1@0:0.3332, corr:0.0216, cal_thr:0.20, acc@cal:0.5176, f1@cal:0.5150
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Training progress plot saved to: /data/hekai/WorkShop/My_project/multimodal_sa/results/mosi_20250817_135638/training_progress_epoch_5.png
+[INFO] Saved intermediate results and plot at epoch 5
+[INFO] Epoch 5 completed: 6 valid steps, avg loss: 1.8873
+epoch:5, train_loss:1.8873, valid_loss:0.6961, test_acc:0.4641
+current mae:1.5052, acc@0:0.4641, acc7:0.1591, f1@0:0.3732, corr:0.0384, cal_thr:0.16, acc@cal:0.5359, f1@cal:0.5368
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 6 completed: 6 valid steps, avg loss: 1.8500
+epoch:6, train_loss:1.8500, valid_loss:0.6748, test_acc:0.4702
+current mae:1.5103, acc@0:0.4702, acc7:0.1591, f1@0:0.3882, corr:0.0511, cal_thr:0.24, acc@cal:0.5389, f1@cal:0.5417
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 7 completed: 6 valid steps, avg loss: 1.8526
+epoch:7, train_loss:1.8526, valid_loss:0.7006, test_acc:0.5115
+current mae:1.4869, acc@0:0.5115, acc7:0.1547, f1@0:0.4944, corr:0.0482, cal_thr:0.06, acc@cal:0.5527, f1@cal:0.5504
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 8 completed: 6 valid steps, avg loss: 1.8406
+epoch:8, train_loss:1.8406, valid_loss:0.6750, test_acc:0.4595
+current mae:1.5083, acc@0:0.4595, acc7:0.1577, f1@0:0.3529, corr:0.0581, cal_thr:0.22, acc@cal:0.5573, f1@cal:0.5598
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 9 completed: 6 valid steps, avg loss: 1.8595
+epoch:9, train_loss:1.8595, valid_loss:0.6873, test_acc:0.4534
+current mae:1.5048, acc@0:0.4534, acc7:0.1591, f1@0:0.3360, corr:0.0780, cal_thr:0.22, acc@cal:0.5649, f1@cal:0.5674
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Training progress plot saved to: /data/hekai/WorkShop/My_project/multimodal_sa/results/mosi_20250817_135638/training_progress_epoch_10.png
+[INFO] Saved intermediate results and plot at epoch 10
+[INFO] Epoch 10 completed: 6 valid steps, avg loss: 1.8533
+epoch:10, train_loss:1.8533, valid_loss:0.6721, test_acc:0.5023
+current mae:1.4787, acc@0:0.5023, acc7:0.1577, f1@0:0.4656, corr:0.1267, cal_thr:0.26, acc@cal:0.6122, f1@cal:0.6006
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Current learning rate: 2.50e-06
+[INFO] Epoch 11 completed: 6 valid steps, avg loss: 1.8003
+epoch:11, train_loss:1.8003, valid_loss:0.6798, test_acc:0.4718
+current mae:1.4958, acc@0:0.4718, acc7:0.1620, f1@0:0.3996, corr:0.1039, cal_thr:0.24, acc@cal:0.5878, f1@cal:0.5902
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 12 completed: 6 valid steps, avg loss: 1.8045
+epoch:12, train_loss:1.8045, valid_loss:0.6635, test_acc:0.5435
+current mae:1.4622, acc@0:0.5435, acc7:0.1650, f1@0:0.5236, corr:0.1613, cal_thr:0.22, acc@cal:0.6321, f1@cal:0.6243
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 13 completed: 6 valid steps, avg loss: 1.8511
+epoch:13, train_loss:1.8511, valid_loss:0.6948, test_acc:0.4901
+current mae:1.4883, acc@0:0.4901, acc7:0.1723, f1@0:0.4074, corr:0.1931, cal_thr:0.32, acc@cal:0.6229, f1@cal:0.6250
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 14 completed: 6 valid steps, avg loss: 1.7837
+epoch:14, train_loss:1.7837, valid_loss:0.6791, test_acc:0.5802
+current mae:1.4402, acc@0:0.5802, acc7:0.1737, f1@0:0.5746, corr:0.1963, cal_thr:0.14, acc@cal:0.6214, f1@cal:0.6236
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Training progress plot saved to: /data/hekai/WorkShop/My_project/multimodal_sa/results/mosi_20250817_135638/training_progress_epoch_15.png
+[INFO] Saved intermediate results and plot at epoch 15
+[INFO] Epoch 15 completed: 6 valid steps, avg loss: 1.7128
+epoch:15, train_loss:1.7128, valid_loss:0.6679, test_acc:0.5130
+current mae:1.4724, acc@0:0.5130, acc7:0.1810, f1@0:0.4521, corr:0.2296, cal_thr:0.36, acc@cal:0.6351, f1@cal:0.6368
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 16 completed: 6 valid steps, avg loss: 1.7525
+epoch:16, train_loss:1.7525, valid_loss:0.6810, test_acc:0.5557
+current mae:1.4390, acc@0:0.5557, acc7:0.1723, f1@0:0.5317, corr:0.2629, cal_thr:0.24, acc@cal:0.6427, f1@cal:0.6440
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 17 completed: 6 valid steps, avg loss: 1.7128
+epoch:17, train_loss:1.7128, valid_loss:0.6623, test_acc:0.5389
+current mae:1.4437, acc@0:0.5389, acc7:0.1752, f1@0:0.4927, corr:0.2948, cal_thr:0.30, acc@cal:0.6412, f1@cal:0.6434
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 18 completed: 6 valid steps, avg loss: 1.7307
+epoch:18, train_loss:1.7307, valid_loss:0.6776, test_acc:0.6656
+current mae:1.3677, acc@0:0.6656, acc7:0.1854, f1@0:0.6574, corr:0.2762, cal_thr:-0.16, acc@cal:0.6595, f1@cal:0.6616
+best mae:1.5100, acc:0.4412, acc7:0.1504, f1:0.3063, corr:0.0528 (epoch 2)
+[INFO] Epoch 19 completed: 6 valid steps, avg loss: 1.7596
+epoch:19, train_loss:1.7596, valid_loss:0.6347, test_acc:0.5588
+current mae:1.4315, acc@0:0.5588, acc7:0.1825, f1@0:0.5258, corr:0.3012, cal_thr:0.32, acc@cal:0.6458, f1@cal:0.6479
+*** New best performance at epoch 19! ***
+best mae:1.4315, acc:0.5588, acc7:0.1825, f1:0.5258, corr:0.3012 (epoch 19)
+[INFO] Training progress plot saved to: /data/hekai/WorkShop/My_project/multimodal_sa/results/mosi_20250817_135638/training_progress_epoch_20.png
+[INFO] Saved intermediate results and plot at epoch 20
+[INFO] Epoch 20 completed: 6 valid steps, avg loss: 1.7062
+epoch:20, train_loss:1.7062, valid_loss:0.6334, test_acc:0.5817
+current mae:1.4170, acc@0:0.5817, acc7:0.1825, f1@0:0.5567, corr:0.3247, cal_thr:0.30, acc@cal:0.6611, f1@cal:0.6629
+*** New best performance at epoch 20! ***
+best mae:1.4170, acc:0.5817, acc7:0.1825, f1:0.5567, corr:0.3247 (epoch 20)
+[INFO] Current learning rate: 1.25e-06
+[INFO] Epoch 21 completed: 6 valid steps, avg loss: 1.6488
+epoch:21, train_loss:1.6488, valid_loss:0.6449, test_acc:0.5939
+current mae:1.4006, acc@0:0.5939, acc7:0.1839, f1@0:0.5753, corr:0.3426, cal_thr:0.30, acc@cal:0.6626, f1@cal:0.6642
+best mae:1.4170, acc:0.5817, acc7:0.1825, f1:0.5567, corr:0.3247 (epoch 20)
+[INFO] Epoch 22 completed: 6 valid steps, avg loss: 1.7337
+epoch:22, train_loss:1.7337, valid_loss:0.6223, test_acc:0.6244
+current mae:1.3666, acc@0:0.6244, acc7:0.2044, f1@0:0.6183, corr:0.3378, cal_thr:0.38, acc@cal:0.6702, f1@cal:0.6683
+*** New best performance at epoch 22! ***
+best mae:1.3666, acc:0.6244, acc7:0.2044, f1:0.6183, corr:0.3378 (epoch 22)
+[INFO] Epoch 23 completed: 6 valid steps, avg loss: 1.6665
+epoch:23, train_loss:1.6665, valid_loss:0.6171, test_acc:0.6351
+current mae:1.3532, acc@0:0.6351, acc7:0.1898, f1@0:0.6272, corr:0.3995, cal_thr:0.26, acc@cal:0.6885, f1@cal:0.6894
+*** New best performance at epoch 23! ***
+best mae:1.3532, acc:0.6351, acc7:0.1898, f1:0.6272, corr:0.3995 (epoch 23)
+[INFO] Epoch 24 completed: 6 valid steps, avg loss: 1.5491
+epoch:24, train_loss:1.5491, valid_loss:0.6126, test_acc:0.6290
+current mae:1.3524, acc@0:0.6290, acc7:0.1912, f1@0:0.6181, corr:0.4107, cal_thr:0.34, acc@cal:0.6931, f1@cal:0.6929
+*** New best performance at epoch 24! ***
+best mae:1.3524, acc:0.6290, acc7:0.1912, f1:0.6181, corr:0.4107 (epoch 24)
+[INFO] Training progress plot saved to: /data/hekai/WorkShop/My_project/multimodal_sa/results/mosi_20250817_135638/training_progress_epoch_25.png
+[INFO] Saved intermediate results and plot at epoch 25
+[INFO] Epoch 25 completed: 6 valid steps, avg loss: 1.6302
+epoch:25, train_loss:1.6302, valid_loss:0.5812, test_acc:0.6855
+current mae:1.3019, acc@0:0.6855, acc7:0.2117, f1@0:0.6849, corr:0.4094, cal_thr:-0.04, acc@cal:0.6611, f1@cal:0.6581
+*** New best performance at epoch 25! ***
+best mae:1.3019, acc:0.6855, acc7:0.2117, f1:0.6849, corr:0.4094 (epoch 25)
+[INFO] Epoch 26 completed: 6 valid steps, avg loss: 1.5953
+epoch:26, train_loss:1.5953, valid_loss:0.5981, test_acc:0.6901
+current mae:1.2727, acc@0:0.6901, acc7:0.2204, f1@0:0.6919, corr:0.4032, cal_thr:-0.10, acc@cal:0.6779, f1@cal:0.6777
+best mae:1.3019, acc:0.6855, acc7:0.2117, f1:0.6849, corr:0.4094 (epoch 25)
+[INFO] Epoch 27 completed: 6 valid steps, avg loss: 1.6032
+epoch:27, train_loss:1.6032, valid_loss:0.6054, test_acc:0.6214
+current mae:1.3244, acc@0:0.6214, acc7:0.2146, f1@0:0.6100, corr:0.4109, cal_thr:0.22, acc@cal:0.6947, f1@cal:0.6954
+best mae:1.3019, acc:0.6855, acc7:0.2117, f1:0.6849, corr:0.4094 (epoch 25)
+[INFO] Epoch 28 completed: 6 valid steps, avg loss: 1.5495
+epoch:28, train_loss:1.5495, valid_loss:0.6024, test_acc:0.6870
+current mae:1.2795, acc@0:0.6870, acc7:0.2248, f1@0:0.6876, corr:0.4252, cal_thr:0.30, acc@cal:0.7069, f1@cal:0.7045
+best mae:1.3019, acc:0.6855, acc7:0.2117, f1:0.6849, corr:0.4094 (epoch 25)
+[INFO] Epoch 29 completed: 6 valid steps, avg loss: 1.4416
+epoch:29, train_loss:1.4416, valid_loss:0.5928, test_acc:0.6412
+current mae:1.2947, acc@0:0.6412, acc7:0.2263, f1@0:0.6334, corr:0.4379, cal_thr:0.12, acc@cal:0.6870, f1@cal:0.6870
+best mae:1.3019, acc:0.6855, acc7:0.2117, f1:0.6849, corr:0.4094 (epoch 25)
+[INFO] Training progress plot saved to: /data/hekai/WorkShop/My_project/multimodal_sa/results/mosi_20250817_135638/training_progress_epoch_30.png
+[INFO] Saved intermediate results and plot at epoch 30
+[INFO] Epoch 30 completed: 6 valid steps, avg loss: 1.5673
+epoch:30, train_loss:1.5673, valid_loss:0.5912, test_acc:0.6916
+current mae:1.2665, acc@0:0.6916, acc7:0.2146, f1@0:0.6928, corr:0.4387, cal_thr:-0.08, acc@cal:0.6687, f1@cal:0.6677
+best mae:1.3019, acc:0.6855, acc7:0.2117, f1:0.6849, corr:0.4094 (epoch 25)
+[INFO] Current learning rate: 1.25e-06
+[INFO] Epoch 31 completed: 6 valid steps, avg loss: 1.4500
+epoch:31, train_loss:1.4500, valid_loss:0.5794, test_acc:0.6840
+current mae:1.2416, acc@0:0.6840, acc7:0.2467, f1@0:0.6855, corr:0.4311, cal_thr:-0.08, acc@cal:0.6809, f1@cal:0.6815
+*** New best performance at epoch 31! ***
+best mae:1.2416, acc:0.6840, acc7:0.2467, f1:0.6855, corr:0.4311 (epoch 31)
+[INFO] Epoch 32 completed: 5 valid steps, avg loss: 1.7196
+epoch:32, train_loss:1.7196, valid_loss:0.6226, test_acc:0.6504
+current mae:1.2789, acc@0:0.6504, acc7:0.2438, f1@0:0.6442, corr:0.4341, cal_thr:0.06, acc@cal:0.6641, f1@cal:0.6607
+best mae:1.2416, acc:0.6840, acc7:0.2467, f1:0.6855, corr:0.4311 (epoch 31)
+[INFO] Epoch 33 completed: 5 valid steps, avg loss: 1.7714
+epoch:33, train_loss:1.7714, valid_loss:0.5904, test_acc:0.6977
+current mae:1.2408, acc@0:0.6977, acc7:0.2336, f1@0:0.6984, corr:0.4516, cal_thr:-0.22, acc@cal:0.6412, f1@cal:0.6323
+best mae:1.2416, acc:0.6840, acc7:0.2467, f1:0.6855, corr:0.4311 (epoch 31)
+[INFO] Epoch 34 completed: 6 valid steps, avg loss: 1.4082
+epoch:34, train_loss:1.4082, valid_loss:0.5769, test_acc:0.6916
+current mae:1.2435, acc@0:0.6916, acc7:0.2380, f1@0:0.6924, corr:0.4565, cal_thr:0.42, acc@cal:0.7191, f1@cal:0.7130
+*** New best performance at epoch 34! ***
+best mae:1.2435, acc:0.6916, acc7:0.2380, f1:0.6924, corr:0.4565 (epoch 34)
+[INFO] Training progress plot saved to: /data/hekai/WorkShop/My_project/multimodal_sa/results/mosi_20250817_135638/training_progress_epoch_35.png
+[INFO] Saved intermediate results and plot at epoch 35
+[INFO] Epoch 35 completed: 6 valid steps, avg loss: 1.4060
+epoch:35, train_loss:1.4060, valid_loss:0.5858, test_acc:0.7221
+current mae:1.1878, acc@0:0.7221, acc7:0.2511, f1@0:0.7209, corr:0.4578, cal_thr:-0.48, acc@cal:0.6687, f1@cal:0.6657
+best mae:1.2435, acc:0.6916, acc7:0.2380, f1:0.6924, corr:0.4565 (epoch 34)
+[INFO] Epoch 36 completed: 6 valid steps, avg loss: 1.4210
+epoch:36, train_loss:1.4210, valid_loss:0.5771, test_acc:0.6336
+current mae:1.3006, acc@0:0.6336, acc7:0.2584, f1@0:0.6203, corr:0.4577, cal_thr:0.20, acc@cal:0.6824, f1@cal:0.6808
+best mae:1.2435, acc:0.6916, acc7:0.2380, f1:0.6924, corr:0.4565 (epoch 34)
+[INFO] Epoch 37 completed: 6 valid steps, avg loss: 1.4521
+epoch:37, train_loss:1.4521, valid_loss:0.5575, test_acc:0.6718
+current mae:1.2490, acc@0:0.6718, acc7:0.2511, f1@0:0.6697, corr:0.4672, cal_thr:-0.10, acc@cal:0.6534, f1@cal:0.6459
+*** New best performance at epoch 37! ***

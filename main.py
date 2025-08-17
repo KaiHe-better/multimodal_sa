@@ -6,15 +6,16 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--gpu", type=str, default="5")
 parser.add_argument("--dataset", type=str, choices=["mosi", "mosei", "chsims"], default="mosi")
 parser.add_argument("--max_seq_length", type=int, default=50)
-parser.add_argument("--train_batch_size", type=int, default=1)  # 训练Qwen时默认更小batch
-parser.add_argument("--dev_batch_size", type=int, default=1)   # 相应调整验证批次大小
-parser.add_argument("--test_batch_size", type=int, default=1)  # 相应调整测试批次大小
-parser.add_argument("--n_epochs", type=int, default=500)        # 修改为20个epoch进行测试
+parser.add_argument("--train_batch_size", type=int, default=32)  
+parser.add_argument("--dev_batch_size", type=int, default=64)   
+parser.add_argument("--test_batch_size", type=int, default=64)  
+parser.add_argument("--n_epochs", type=int, default=500)          
 parser.add_argument("--beta_shift", type=float, default=1.0)
 parser.add_argument("--dropout_prob", type=float, default=0.3) # 优化：减少正则化压力
-parser.add_argument("--model", type=str, choices=["bert-base-uncased", "bert-base-chinese", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B"], 
-                    default= "Qwen/Qwen3-4B",help="Pretrained transformer model to use")
+parser.add_argument("--model", type=str, choices=["bert-base-uncased", "bert-base-chinese", "Qwen/Qwen3-1.7B", "Qwen/Qwen3-4B"], default= "bert-base-uncased",help="Pretrained transformer model to use")
 parser.add_argument("--learning_rate", type=float, default=5e-6) # 更稳：降低默认学习率
+parser.add_argument("--plm_lr", type=float, default=5e-6, help="PLM 参数组学习率，默认 5e-6")
+parser.add_argument("--fusion_lr", type=float, default=3e-4, help="融合/解码等非 PLM 参数组学习率，默认 3e-4")
 parser.add_argument("--gradient_accumulation_step", type=int, default=8)  # 提高累积步数，平滑更新
 parser.add_argument("--warmup_proportion", type=float, default=0.2)  # 优化：更温和的预热
 parser.add_argument("--seed", type=int, default=24)
@@ -23,7 +24,9 @@ parser.add_argument("--output_dir", type=str, default="results", help="Directory
 parser.add_argument("--save_interval", type=int, default=5, help="Save training progress plot and results summary every N epochs")
 parser.add_argument("--limit_steps_enabled", action="store_true", help="启用后训练/验证/测试各阶段最多只运行指定步数")
 parser.add_argument("--limit_steps", type=int, default=30, help="当启用limit_steps_enabled时，每个阶段最多运行的步数")
-parser.add_argument("--freeze_plm_epochs", type=int, default=0, help="前N个epoch冻结预训练语言模型(Qwen/BERT)仅训练自定义模块；N之后解冻")
+parser.add_argument("--freeze_plm_epochs", type=int, default=10, help="前N个epoch冻结预训练语言模型(Qwen/BERT)仅训练自定义模块；N之后解冻")
+parser.add_argument("--mi_weight", type=float, default=0.25, help="MI 正则项的权重缩放（乘到模型内部的 mi_loss 上），推荐区间 0.15–0.35")
+parser.add_argument("--mi_sweep", type=str, default="", help="逗号分隔的一组 MI 权重，留空表示不做 sweep。例如: 0.0,0.5,1.0,2.0")
 args = parser.parse_args()
 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
@@ -56,8 +59,11 @@ from transformers import AutoTokenizer, get_linear_schedule_with_warmup
 from torch.optim import AdamW
 import os
 
-# 自动选择设备，若无GPU则使用CPU
-DEVICE = torch.device("cuda")
+# 自动选择设备：优先CUDA，否则CPU；若CUDA初始化异常也回退CPU
+try:
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+except Exception:
+    DEVICE = torch.device("cpu")
 print(f"[INFO] Using device: {DEVICE}")
 warnings.filterwarnings("ignore", category=FutureWarning, module="transformers")
 warnings.filterwarnings("ignore", message=".*The `device` argument is deprecated.*")
@@ -83,6 +89,7 @@ if HAS_SEABORN:
     except Exception:
         pass
 
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 from model import DIB
 from global_configs import get_config
 
@@ -432,13 +439,18 @@ def set_random_seed(seed: int):
     torch.cuda.manual_seed_all(seed)
 
 
-def prep_for_training(num_train_optimization_steps: int):
+def prep_for_training(num_train_optimization_steps: int, mi_weight: float = 1.0):
     multimodal_config = MultimodalConfig(
         beta_shift=args.beta_shift, dropout_prob=args.dropout_prob
     )
 
     model = DIB(
-        args.model, multimodal_config=multimodal_config, text_dim=TEXT_DIM, visual_dim=VISUAL_DIM, acoustic_dim=ACOUSTIC_DIM
+        args.model,
+        multimodal_config=multimodal_config,
+        text_dim=TEXT_DIM,
+        visual_dim=VISUAL_DIM,
+        acoustic_dim=ACOUSTIC_DIM,
+        mi_weight=mi_weight,
     )
    
     total_para = 0
@@ -458,11 +470,22 @@ def prep_for_training(num_train_optimization_steps: int):
     print("执行自定义权重初始化...")
     model._init_custom_weights()
 
-    # 创建优化器，使用更保守的学习率以提高数值稳定性
-    effective_lr = min(args.learning_rate, 2e-5)  # 进一步降低学习率以减少梯度波动
-    print(f"Using learning rate: {effective_lr}")
-    # 训练所有参数（包括Qwen骨干）
-    optimizer = AdamW(model.parameters(), lr=effective_lr, eps=1e-8, weight_decay=0.01)
+    # 创建优化器参数组：PLM 使用较低 LR，其余模块使用较高 LR
+    # 使用命令行超参数控制两组学习率
+    plm_lr = float(args.plm_lr)
+    fusion_lr = float(args.fusion_lr)
+    # 提取 PLM 参数（HuggingFace 模型在 model.bert.model 下）
+    try:
+        plm_params = list(model.bert.model.parameters())
+    except Exception:
+        plm_params = list(model.bert.parameters())
+    plm_param_ids = {id(p) for p in plm_params}
+    other_params = [p for p in model.parameters() if id(p) not in plm_param_ids]
+    print(f"Optimizer groups -> PLM: {len(plm_params)} params @ lr={plm_lr:.2e}, Other: {len(other_params)} params @ lr={fusion_lr:.2e}")
+    optimizer = AdamW([
+        {"params": plm_params, "lr": plm_lr},
+        {"params": other_params, "lr": fusion_lr},
+    ], eps=1e-8, weight_decay=0.01)
     
     # 添加学习率调度器 - 进一步提高稳定性
     from torch.optim.lr_scheduler import ReduceLROnPlateau
@@ -991,7 +1014,7 @@ def test_score_model(model: nn.Module, test_dataloader: DataLoader, use_zero=Fal
     return acc, mae, corr, f_score, mult_a7
 
 
-def calibrate_threshold_on_dev(model: nn.Module, dev_dataloader: DataLoader, search_min=-1.5, search_max=1.5, step=0.05):
+def calibrate_threshold_on_dev(model: nn.Module, dev_dataloader: DataLoader, search_min=-0.6, search_max=0.6, step=0.02):
     """在开发集上扫描阈值，最大化 F1。返回最佳阈值与对应指标。"""
     model.eval()
     preds, labels, _ = test_epoch(model, dev_dataloader)
@@ -1268,18 +1291,57 @@ def main():
         num_train_optimization_steps,
     ) = set_up_data_loader()
 
-    model, optimizer, scheduler = prep_for_training(
-        num_train_optimization_steps)
+    # 解析 sweep 列表
+    sweep_values = []
+    if isinstance(args.mi_sweep, str) and len(args.mi_sweep.strip()) > 0:
+        try:
+            sweep_values = [float(x) for x in args.mi_sweep.split(',') if x.strip() != '']
+        except Exception as _e:
+            print(f"[WARNING] Failed to parse --mi_sweep: {args.mi_sweep}, err={_e}")
+            sweep_values = []
 
-    train(
-        model,
-        optimizer,
-        scheduler,
-        train_data_loader,
-        dev_data_loader,
-        test_data_loader,
-        results_dir
-    )
+    if not sweep_values:
+        # 单次运行
+        model, optimizer, scheduler = prep_for_training(num_train_optimization_steps, mi_weight=args.mi_weight)
+        train(
+            model,
+            optimizer,
+            scheduler,
+            train_data_loader,
+            dev_data_loader,
+            test_data_loader,
+            results_dir
+        )
+    else:
+        # 多次 sweep，对每个权重建立子目录
+        base_dir = results_dir or os.getcwd()
+        for w in sweep_values:
+            sub_dir = os.path.join(base_dir, f"mi_{w}")
+            try:
+                os.makedirs(sub_dir, exist_ok=True)
+            except Exception:
+                pass
+            print(f"\n===== Running MI sweep: weight={w} =====")
+            # 保存该子实验的超参
+            try:
+                hyper = vars(args).copy()
+                hyper['mi_weight'] = w
+                with open(os.path.join(sub_dir, "hyperparameters.json"), "w") as f:
+                    import json as _json
+                    _json.dump(hyper, f, indent=4)
+            except Exception:
+                pass
+
+            model, optimizer, scheduler = prep_for_training(num_train_optimization_steps, mi_weight=w)
+            train(
+                model,
+                optimizer,
+                scheduler,
+                train_data_loader,
+                dev_data_loader,
+                test_data_loader,
+                sub_dir
+            )
     
     if results_dir:
         print(f"\nExperiment complete. Results saved to {results_dir}")
